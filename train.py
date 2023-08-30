@@ -296,6 +296,8 @@ parser.add_argument('--log-wandb', action='store_true', default=False,
 parser.add_argument('--throughput', action='store_true', default=False,
                     help='test throughput')
 
+
+local_rank = int(os.environ["LOCAL_RANK"])
 def _parse_args():
     # Do we have a config file to parse?
     args_config, remaining = config_parser.parse_known_args()
@@ -353,8 +355,8 @@ def main():
     args.world_size = 1
     args.rank = 0  # global rank
     if args.distributed:
-        args.device = 'cuda:%d' % args.local_rank
-        torch.cuda.set_device(args.local_rank)
+        args.device = 'cuda:%d' % int(os.environ["LOCAL_RANK"])
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
         args.world_size = torch.distributed.get_world_size()
         args.rank = torch.distributed.get_rank()
@@ -404,7 +406,7 @@ def main():
     # macs, params = profile(model, inputs=(input_data,))
     # macs, params = clever_format([macs, params], "%.3f")
     flops = FlopCountAnalysis(model, input_data)
-    if args.local_rank == 0:
+    if int(os.environ["LOCAL_RANK"]) == 0:
         # _logger.info(model)
         # _logger.info(f'macs: {macs}, params: {params}')
         _logger.info(flop_count_str(flops))
@@ -415,11 +417,11 @@ def main():
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
         args.num_classes = model.num_classes  # FIXME handle model default vs config num_classes more elegantly
 
-    if args.local_rank == 0:
+    if int(os.environ["LOCAL_RANK"]) == 0:
         _logger.info(
             f'Model {safe_model_name(args.model)} created, param count:{sum([m.numel() for m in model.parameters()])}')
 
-    data_config = resolve_data_config(vars(args), model=model, verbose=args.local_rank == 0)
+    data_config = resolve_data_config(vars(args), model=model, verbose=int(os.environ["LOCAL_RANK"]) == 0)
 
     # setup augmentation batch splits for contrastive loss or split bn
     num_aug_splits = 0
@@ -445,7 +447,7 @@ def main():
             model = convert_syncbn_model(model)
         else:
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-        if args.local_rank == 0:
+        if int(os.environ["LOCAL_RANK"]) == 0:
             _logger.info(
                 'Converted model to use Synchronized BatchNorm. WARNING: You may have issues if using '
                 'zero initialized BN layers (enabled by default for ResNets) while sync-bn enabled.')
@@ -463,15 +465,15 @@ def main():
     if use_amp == 'apex':
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1')
         loss_scaler = ApexScaler()
-        if args.local_rank == 0:
+        if int(os.environ["LOCAL_RANK"]) == 0:
             _logger.info('Using NVIDIA APEX AMP. Training in mixed precision.')
     elif use_amp == 'native':
         amp_autocast = torch.cuda.amp.autocast
         loss_scaler = NativeScaler()
-        if args.local_rank == 0:
+        if int(os.environ["LOCAL_RANK"]) == 0:
             _logger.info('Using native Torch AMP. Training in mixed precision.')
     else:
-        if args.local_rank == 0:
+        if int(os.environ["LOCAL_RANK"]) == 0:
             _logger.info('AMP not enabled. Training in float32.')
 
     # optionally resume from a checkpoint
@@ -481,7 +483,7 @@ def main():
             model, args.resume,
             optimizer=None if args.no_resume_opt else optimizer,
             loss_scaler=None if args.no_resume_opt else loss_scaler,
-            log_info=args.local_rank == 0)
+            log_info=int(os.environ["LOCAL_RANK"]) == 0)
 
     # setup exponential moving average of model weights, SWA could be used here too
     model_ema = None
@@ -496,13 +498,13 @@ def main():
     if args.distributed:
         if has_apex and use_amp != 'native':
             # Apex DDP preferred unless native amp is activated
-            if args.local_rank == 0:
+            if int(os.environ["LOCAL_RANK"]) == 0:
                 _logger.info("Using NVIDIA APEX DistributedDataParallel.")
             model = ApexDDP(model, delay_allreduce=True)
         else:
-            if args.local_rank == 0:
+            if int(os.environ["LOCAL_RANK"]) == 0:
                 _logger.info("Using native Torch DistributedDataParallel.")
-            model = NativeDDP(model, device_ids=[args.local_rank])  # , find_unused_parameters=True
+            model = NativeDDP(model, device_ids=[int(os.environ["LOCAL_RANK"])])  # , find_unused_parameters=True
         # NOTE: EMA model does not need to be wrapped by DDP
 
     # setup learning rate schedule and starting epoch
@@ -516,7 +518,7 @@ def main():
     if lr_scheduler is not None and start_epoch > 0:
         lr_scheduler.step(start_epoch)
 
-    if args.local_rank == 0:
+    if int(os.environ["LOCAL_RANK"]) == 0:
         _logger.info('Scheduled epochs: {}'.format(num_epochs))
 
     # create the train and eval datasets
@@ -646,7 +648,7 @@ def main():
                 amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn)
 
             if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                if args.local_rank == 0:
+                if int(os.environ["LOCAL_RANK"]) == 0:
                     _logger.info("Distributing BatchNorm running means and vars")
                 distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
@@ -751,7 +753,7 @@ def train_one_epoch(
                 reduced_loss = reduce_tensor(loss.data, args.world_size)
                 losses_m.update(reduced_loss.item(), input.size(0))
 
-            if args.local_rank == 0:
+            if int(os.environ["LOCAL_RANK"]) == 0:
                 _logger.info(
                     'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
                     'Loss: {loss.val:>9.6f} ({loss.avg:>6.4f})  '
@@ -840,7 +842,7 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
 
             batch_time_m.update(time.time() - end)
             end = time.time()
-            if args.local_rank == 0 and (last_batch or batch_idx % args.log_interval == 0):
+            if int(os.environ["LOCAL_RANK"]) == 0 and (last_batch or batch_idx % args.log_interval == 0):
                 log_name = 'Test' + log_suffix
                 _logger.info(
                     '{0}: [{1:>4d}/{2}]  '
@@ -858,3 +860,4 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
 
 if __name__ == '__main__':
     main()
+
