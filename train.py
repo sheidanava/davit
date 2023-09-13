@@ -40,7 +40,6 @@ from timm.utils import ApexScaler, NativeScaler
 from thop import profile, clever_format
 from fvcore.nn import FlopCountAnalysis, flop_count_table, flop_count_str
 
-
 try:
     from apex import amp
     from apex.parallel import DistributedDataParallel as ApexDDP
@@ -67,7 +66,6 @@ torch.backends.cudnn.benchmark = True
 _logger = logging.getLogger('train')
 if 'LOCAL_RANK' in os.environ:
     local_rank = int(os.environ["LOCAL_RANK"])
-    print ("======LOCAL_RANK===",local_rank, os.environ["LOCAL_RANK"])
 else:
     local_rank =0
 # The first arg parser parses out only the --config argument, this argument is used to
@@ -75,7 +73,6 @@ else:
 config_parser = parser = argparse.ArgumentParser(description='Training Config', add_help=False)
 parser.add_argument('-c', '--config', default='', type=str, metavar='FILE',
                     help='YAML config file specifying default arguments')
-
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 
